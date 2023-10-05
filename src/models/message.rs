@@ -5,7 +5,7 @@ use warp::ws::Message as WsMessage;
 pub struct Message {
     pub source: String,
     pub target: String,
-    pub message: String,
+    pub message: serde_json::Value,
 }
 
 impl Message {

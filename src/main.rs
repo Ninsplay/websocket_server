@@ -93,21 +93,27 @@ async fn client_connect(
         let ws_msg = match result {
             Ok(ws_msg) => ws_msg,
             Err(e) => {
-                warn!("websocket error({}): {}", identifier, e);
+                warn!("websocket error from [{}] {}", identifier, e);
                 break;
             }
         };
-        info!("{}: {:?}", identifier, ws_msg);
         if ws_msg.is_close() {
+            warn!("[{}] closed connection", identifier);
             break;
         }
+        // 不是文本消息，比如PING
+        if !ws_msg.is_text() {
+            continue;
+        }
+        info!("[{}] {}", identifier, ws_msg.to_str().unwrap());
+
         let msg = Message::from_json(ws_msg.to_str().unwrap());
         match msg {
             Ok(msg) => {
                 client_send(msg, clients.clone()).await;
             }
             Err(e) => {
-                warn!("json parsing error({}): {}", identifier, e);
+                warn!("json parsing error from [{}]: {}", identifier, e);
             }
         }
     }

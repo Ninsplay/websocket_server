@@ -1,33 +1,38 @@
+use itertools::Itertools;
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt, TryFutureExt};
 use log::{error, info, warn};
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use warp::ws::WebSocket;
+use warp::ws::{WebSocket, Ws};
 use warp::Filter;
 
 mod models;
-use models::{Client, Message};
+use models::{Client, Config, Message};
 type Clients = Arc<RwLock<HashMap<String, Client>>>;
 
 #[tokio::main]
 async fn main() {
     log4rs::init_file("logging_config.yaml", Default::default()).unwrap();
+    let config = Config::load_from_yaml("config.yaml");
 
     let clients = Clients::default();
 
     let route = warp::path!(String)
         .and(warp::ws())
         .and(with_clients(clients.clone()))
-        .map(|identifier, ws: warp::ws::Ws, clients| {
-            ws.on_upgrade(move |socket| client_connect(identifier, socket, clients))
+        .and(warp::any().map(move || config.whitelist.clone()))
+        .map(|identifier, ws: Ws, clients, whitelist| {
+            ws.on_upgrade(move |socket| client_connect(identifier, socket, clients, whitelist))
         });
 
-    info!("Listening on: {}", 1657); // TODO 从配置文件读取端口号等信息
-    warp::serve(route).run(([0, 0, 0, 0], 1657)).await;
+    info!("Listening on: {}:{}", config.host, config.port);
+    let addr = SocketAddr::from((config.host.parse::<IpAddr>().unwrap(), config.port));
+    warp::serve(route).run(addr).await;
 }
 
 //包一下，让它可以克隆
@@ -35,9 +40,19 @@ fn with_clients(clients: Clients) -> impl Filter<Extract = (Clients,), Error = I
     warp::any().map(move || clients.clone())
 }
 
-async fn client_connect(identifier: String, ws: WebSocket, clients: Clients) {
-    let (mut ws_tx, mut ws_rx) = ws.split();
+async fn client_connect(
+    identifier: String,
+    ws: WebSocket,
+    clients: Clients,
+    whitelist: Vec<String>,
+) {
+    info!("{} trying to connect", identifier);
+    if !whitelist.is_empty() && !whitelist.contains(&identifier) {
+        warn!("{} not in whitelist", identifier);
+        return;
+    }
 
+    let (mut ws_tx, mut ws_rx) = ws.split();
     let (tx, rx) = mpsc::unbounded_channel();
     let mut rx = UnboundedReceiverStream::new(rx);
 
@@ -58,8 +73,15 @@ async fn client_connect(identifier: String, ws: WebSocket, clients: Clients) {
         .insert(identifier.clone(), Client::new(identifier.clone(), tx));
     info!("{} connected", identifier);
     info!(
-        "connected clients' indetifier: {}",
-        clients.read().await.len()
+        "connected clients: {}",
+        clients
+            .read()
+            .await
+            .keys()
+            .sorted()
+            .map(|s| s.to_string())
+            .collect::<Vec<String>>()
+            .join(", ")
     );
 
     while let Some(result) = ws_rx.next().await {
@@ -98,7 +120,7 @@ async fn client_send(message: Message, clients: Clients) {
     let client = match clients.get_mut(&message.target) {
         Some(client) => client,
         None => {
-            error!("{} not found", message.target);
+            error!("target {} not connected", message.target);
             return;
         }
     };

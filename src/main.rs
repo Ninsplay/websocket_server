@@ -52,6 +52,11 @@ async fn client_connect(
         return;
     }
 
+    if clients.read().await.contains_key(&identifier) {
+        warn!("{} already connected", identifier);
+        return;
+    }
+
     let (mut ws_tx, mut ws_rx) = ws.split();
     let (tx, rx) = mpsc::unbounded_channel();
     let mut rx = UnboundedReceiverStream::new(rx);

@@ -59,7 +59,7 @@ jobs:
 
           # (optional) Comma-separated list of additional files to be included to archive.
           # Note that glob pattern is not supported yet.
-          include: LICENSE,README.md,logging_config.yml
+          include: LICENSE,README.md,logging_config.yaml
 
           # (required) GitHub token for uploading assets to GitHub Releases.
           token: ${{ secrets.TOKEN }}

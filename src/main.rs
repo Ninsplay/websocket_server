@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt, TryFutureExt};
 use log::{error, info, warn};
+use serde_json::json;
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use warp::ws::{WebSocket, Ws};
@@ -77,6 +78,18 @@ async fn client_connect(
         .await
         .insert(identifier.clone(), Client::new(identifier.clone(), tx));
     info!("{} connected", identifier);
+    let json_msg = json!({
+        "source": identifier,
+        "target": "broadcast",
+        "message": {
+            "action": "connect",
+            "body": {
+                "identifier": identifier,
+            },
+        }
+    });
+    let msg = Message::from_json(&json_msg.to_string()).unwrap();
+    client_broadcast(msg, clients.clone()).await;
     info!(
         "connected clients: {}",
         clients
@@ -101,7 +114,6 @@ async fn client_connect(
             warn!("[{}] closed connection", identifier);
             break;
         }
-        // 不是文本消息，比如PING
         if !ws_msg.is_text() {
             continue;
         }
@@ -113,7 +125,12 @@ async fn client_connect(
                 client_send(msg, clients.clone()).await;
             }
             Err(e) => {
-                warn!("json parsing error from [{}]: {}", identifier, e);
+                warn!(
+                    "json parsing error [{}] when parsing message \n{}\n from [{}]: ",
+                    e,
+                    ws_msg.to_str().unwrap(),
+                    identifier,
+                );
             }
         }
     }
@@ -122,11 +139,39 @@ async fn client_connect(
 }
 
 async fn client_disconnect(identifier: String, clients: Clients) {
-    clients.write().await.remove(&identifier);
     warn!("{} disconnected", identifier);
+    clients.write().await.remove(&identifier);
+    let json_msg = json!({
+        "source": identifier,
+        "target": "broadcast",
+        "message": {
+            "action": "disconnect",
+            "body": {
+                "identifier": identifier,
+            },
+        }
+    });
+    let msg = Message::from_json(&json_msg.to_string()).unwrap();
+    client_broadcast(msg, clients.clone()).await;
+
+    info!(
+        "connected clients: {}",
+        clients
+            .read()
+            .await
+            .keys()
+            .sorted()
+            .map(|s| s.to_string())
+            .collect::<Vec<String>>()
+            .join(", ")
+    );
 }
 
 async fn client_send(message: Message, clients: Clients) {
+    if message.target == "broadcast" {
+        return client_broadcast(message, clients).await;
+    }
+
     let mut clients = clients.write().await;
     let client = match clients.get_mut(&message.target) {
         Some(client) => client,
@@ -136,4 +181,14 @@ async fn client_send(message: Message, clients: Clients) {
         }
     };
     client.tx.send(message.to_ws_message()).unwrap();
+}
+
+async fn client_broadcast(message: Message, clients: Clients) {
+    let clients = clients.read().await;
+    for client in clients.values() {
+        if client.identifier == message.source {
+            continue;
+        }
+        client.tx.send(message.to_ws_message()).unwrap();
+    }
 }
